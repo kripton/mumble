@@ -1398,7 +1398,13 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	msg.set_actor(uSource->uiSession);
 
 	// Send the message to all users that are in (= have joined) OR are
-	// "listening" to channels to which the message has been directed to
+	// "listening" to channels to which the message has been directed to.
+	//
+	// It will fail (return PERM_DENIED) if the sender doesn't have the
+	// permission to send TextMessages to one of the channels directly
+	// specified
+	// It will NOT fail if the user is not allowed to send text messages
+	// to a channel linked to the one of the channels specified
 	for (int i = 0; i < msg.channel_id_size(); ++i) {
 		unsigned int id = msg.channel_id(i);
 
@@ -1427,20 +1433,21 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 		tm.qlChannels.append(id);
 
-		// Forward text message to linked channels
-		if (c->qhLinks.count() > 0) {
-			foreach(Channel *l, c->qhLinks.keys()) {
-				foreach(User *p, l->qlUsers) {
-					users.insert(static_cast<ServerUser *>(p));
-				}
-
-				tm.qlTrees.append(l->iId);
-			}
+		// Find all channels linked to that channel and append them to q
+		// We do no need to add those channels's users since that is done later
+		foreach (Channel *l, c->allLinks()) {
+			q.enqueue(l);
+			tm.qlChannels.append(l->iId);
 		}
 	}
 
 	// If the message is sent to trees of channels, find all affected channels
 	// and append them to q
+	//
+	// This will fail if the user doesn't have the permission to send
+	// TextMessages for any root channel specified
+	// It will NOT fail if the user doesn't have the text permission for any
+	// child channel of the roots specified. The message simply won't occur there
 	for (int i = 0; i < msg.tree_id_size(); ++i) {
 		unsigned int id = msg.tree_id(i);
 
@@ -1469,7 +1476,8 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 
 	// Go through all channels in q and append all users in those channels
 	// to the list of recipients
-	// Sub-channels are enqued so they are also checked by a later loop-iteration
+	// Sub-channels are enqued in the loops so they are also checked by a
+	// later loop-iteration until the queue is empty
 	while (!q.isEmpty()) {
 		Channel *c = q.dequeue();
 		if (ChanACL::hasPermission(uSource, c, ChanACL::TextMessage, &acCache)) {
@@ -1491,6 +1499,10 @@ void Server::msgTextMessage(ServerUser *uSource, MumbleProto::TextMessage &msg) 
 	}
 
 	// Go through all users the message is sent to directly
+	// The message WILL fail if the user is not allowed to send text messages
+	// to any channel any user addressed is in
+	// This is okay since TextMessages to users + channels or users + tree are
+	// not supported in the UI
 	for (int i = 0; i < msg.session_size(); ++i) {
 		unsigned int session = msg.session(i);
 		ServerUser *u        = qhUsers.value(session);
